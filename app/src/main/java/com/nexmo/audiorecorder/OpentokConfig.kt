@@ -1,0 +1,7 @@
+package com.nexmo.audiorecorder
+
+object OpentokConfig {
+    const val API_KEY: String = "46789364"
+    const val SESSION_ID: String = "2_MX40Njc4OTM2NH5-MTYxNTI2MjIyMDc4NH5aMlVSc29uU04weks1aUMzV2xZeTNsUmx-fg"
+    const val TOKEN: String = "T1==cGFydG5lcl9pZD00Njc4OTM2NCZzaWc9NjI5MGNlN2FkNmNjMzBhYjkzYWVhNTgwZGEzNzA2MDlhYTQ4NTM2YjpzZXNzaW9uX2lkPTJfTVg0ME5qYzRPVE0yTkg1LU1UWXhOVEkyTWpJeU1EYzROSDVhTWxWU2MyOXVVMDR3ZWtzMWFVTXpWMnhaZVROc1VteC1mZyZjcmVhdGVfdGltZT0xNjE1MjY4NzQ0Jm5vbmNlPTAuMTcxNDE2OTQ1OTc2NTAwNyZyb2xlPXB1Ymxpc2hlciZleHBpcmVfdGltZT0xNjE1MzU1MTQ0JmluaXRpYWxfbGF5b3V0X2NsYXNzX2xpc3Q9"
+}
