@@ -13,6 +13,10 @@ import com.opentok.android.Session.SessionListener
 import pub.devrel.easypermissions.AfterPermissionGranted
 import pub.devrel.easypermissions.EasyPermissions
 import java.io.File
+import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.format.DateTimeFormatter
+import java.util.*
 
 class MainActivity : AppCompatActivity() {
     companion object {
@@ -176,8 +180,9 @@ class MainActivity : AppCompatActivity() {
             // Set to custom audio device
             Log.i(TAG, "Setting up new Audio Device (recorder)")
 
-            val timestampText: Long = System.currentTimeMillis() / 1000
-            val fileName = "$timestampText-${OpentokConfig.SESSION_ID}.raw"
+            val timestampText = SimpleDateFormat("yyyyMMdd_HHmmss").format(Date())
+            val fileName = "$timestampText.raw"
+
             val externalRoot = this.getExternalFilesDir(null)
             val filePath = File(externalRoot, fileName)
             Log.i(TAG, "File Path: ${filePath.absolutePath}")
