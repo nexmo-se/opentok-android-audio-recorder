@@ -5,8 +5,10 @@ import android.content.Intent
 import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.util.Log
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import androidx.appcompat.app.AppCompatActivity
 import com.opentok.android.*
 import com.opentok.android.Session.SessionListener
@@ -14,8 +16,6 @@ import pub.devrel.easypermissions.AfterPermissionGranted
 import pub.devrel.easypermissions.EasyPermissions
 import java.io.File
 import java.text.SimpleDateFormat
-import java.time.Instant
-import java.time.format.DateTimeFormatter
 import java.util.*
 
 class MainActivity : AppCompatActivity() {
@@ -26,33 +26,39 @@ class MainActivity : AppCompatActivity() {
 
     private var session: Session? = null
     private var publisher: Publisher? = null
-    private var subscriber: Subscriber? = null
+    private var subscribers: MutableMap<String, Subscriber> = mutableMapOf()
+    private var frameLayouts: MutableMap<String, FrameLayout> = mutableMapOf()
 
     private lateinit var publisherViewContainer: FrameLayout
-    private lateinit var subscriberViewContainer: FrameLayout
+    private lateinit var subscriberViewContainer: LinearLayout
     private lateinit var recordedAudioButton: Button
 
     private val sessionListener: SessionListener = object: SessionListener {
         override fun onStreamDropped(session: Session?, stream: Stream?) {
             Log.d(TAG, "onStreamDropped: Stream Dropped ${stream?.getStreamId() ?: "null id"} in session ${session?.sessionId ?: "null id"}")
 
-            if (subscriber != null) {
-                subscriber = null
-                subscriberViewContainer.removeAllViews()
+            if (stream?.getStreamId() != null) {
+                val frameLayout = frameLayouts.get(stream?.getStreamId())
+                subscriberViewContainer.removeView(frameLayout)
             }
         }
 
         override fun onStreamReceived(session: Session?, stream: Stream?) {
             Log.d(TAG, "onStreamReceived: Stream Received: ${stream?.getStreamId() ?: "null id"} in session ${session?.sessionId ?: "null id"}")
 
-            if (subscriber == null) {
-                subscriber = Subscriber.Builder(this@MainActivity, stream).build()
-                subscriber?.renderer?.setStyle(BaseVideoRenderer.STYLE_VIDEO_SCALE, BaseVideoRenderer.STYLE_VIDEO_FILL)
-                subscriber?.setSubscriberListener(subscriberListener)
+            val subscriber = Subscriber.Builder(this@MainActivity, stream).build()
+            subscriber?.renderer?.setStyle(BaseVideoRenderer.STYLE_VIDEO_SCALE, BaseVideoRenderer.STYLE_VIDEO_FILL)
+            subscriber?.setSubscriberListener(subscriberListener)
 
-                session?.subscribe(subscriber)
-                subscriberViewContainer.addView(subscriber?.view)
-            }
+            session?.subscribe(subscriber)
+            val frameLayout = FrameLayout(this@MainActivity)
+            frameLayout.layoutParams = ViewGroup.LayoutParams(stream?.videoWidth ?: 240, stream?.videoHeight ?: 320)
+            frameLayout.addView(subscriber?.view)
+
+            subscriberViewContainer.addView(frameLayout)
+
+            subscribers.putIfAbsent(subscriber.stream.getStreamId(), subscriber)
+            frameLayouts.putIfAbsent(subscriber.stream.getStreamId(), frameLayout)
         }
 
         override fun onConnected(session: Session?) {
@@ -133,7 +139,7 @@ class MainActivity : AppCompatActivity() {
         publisher = null
 
         subscriberViewContainer.removeAllViews()
-        subscriber = null
+        subscribers.clear()
     }
 
     override fun onResume() {
@@ -144,7 +150,7 @@ class MainActivity : AppCompatActivity() {
         publisher = null
 
         subscriberViewContainer.removeAllViews()
-        subscriber = null
+        subscribers.clear()
 
         requestPermissions()
     }

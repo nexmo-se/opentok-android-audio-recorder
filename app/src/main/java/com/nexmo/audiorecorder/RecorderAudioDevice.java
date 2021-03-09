@@ -905,7 +905,6 @@ class RecorderAudioDevice extends BaseAudioDevice {
                     OutputStream fileOutputStream = new FileOutputStream(outputFile, true);
                     fileOutputStream.write(tempBufPlay, 0, bytesRead);
                     fileOutputStream.close();
-                    Log.d(TAG, "Written");
 
                     // Write to Speaker
                     int bytesWritten = audioTrack.write(tempBufPlay, 0, bytesRead);
