@@ -26,9 +26,11 @@ import com.opentok.android.OtLog;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.ShortBuffer;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.locks.Condition;
@@ -58,8 +60,16 @@ class RecorderAudioDevice extends BaseAudioDevice {
     // Capture & render buffers
     private ByteBuffer playBuffer;
     private ByteBuffer recBuffer;
+    private ByteBuffer streamBuffer;
     private byte[] tempBufPlay;
     private byte[] tempBufRec;
+    private byte[] tempBufCapturerStream;
+    private byte[] tempBufRendererStream;
+
+    private FastPipedInputStream capturerStream;
+    private FastPipedInputStream rendererStream;
+    private boolean startRecord;
+    private boolean stopRecord;
 
     private final ReentrantLock rendererLock = new ReentrantLock(true);
     private final Condition renderEvent = rendererLock.newCondition();
@@ -441,12 +451,22 @@ class RecorderAudioDevice extends BaseAudioDevice {
         this.captureSamplingRate = samplingRate;
         this.outputSamplingRate = samplingRate;
 
+        this.capturerStream = new FastPipedInputStream(captureSamplingRate * NUM_CHANNELS_CAPTURING * 2 * 10);
+        this.rendererStream = new FastPipedInputStream(outputSamplingRate * NUM_CHANNELS_RENDERING * 2 * 10);
+        this.startRecord = false;
+        this.stopRecord = false;
+
+
         try {
             recBuffer = ByteBuffer.allocateDirect(DEFAULT_BUFFER_SIZE);
+            streamBuffer = ByteBuffer.allocateDirect(captureSamplingRate * NUM_CHANNELS_CAPTURING * 2);
         } catch (Exception e) {
             log.e(e.getMessage());
         }
         tempBufRec = new byte[DEFAULT_BUFFER_SIZE];
+        tempBufCapturerStream = new byte[captureSamplingRate * NUM_CHANNELS_CAPTURING * 2 * 10];
+        tempBufRendererStream = new byte[outputSamplingRate * NUM_CHANNELS_RENDERING * 2 * 10];
+
 
         audioManager = (AudioManager)context.getSystemService(Context.AUDIO_SERVICE);
         bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
@@ -626,6 +646,9 @@ class RecorderAudioDevice extends BaseAudioDevice {
         captureEvent.signal();
         captureLock.unlock();
         audioManagerMode.acquireMode(audioManager);
+
+        // Start Recorder
+        startRecorder();
         return true;
     }
 
@@ -633,6 +656,8 @@ class RecorderAudioDevice extends BaseAudioDevice {
     public boolean stopCapturer() {
         Log.d(TAG, "stopCapturer");
         log.d("stopCapturer() called");
+
+        stopRecord = true;
 
         if (audioRecord == null) {
             throw new IllegalStateException("stopCapturer(): stop() called on an uninitialized AudioRecord.");
@@ -690,8 +715,16 @@ class RecorderAudioDevice extends BaseAudioDevice {
                                 throw new RuntimeException("captureThread(): AudioRecord.ERROR or default");
                         }
                     }
-
                     samplesRead = ((readBytes) >> 1) / NUM_CHANNELS_CAPTURING;
+
+
+
+                    // Write to PipedStream
+                    if (startRecord && !stopRecord) {
+                        capturerStream.write(tempBufRec, 0, readBytes);
+//                        Log.d(TAG, String.format("Capturer Write: %d", readBytes));
+                    }
+
 
                     recBuffer.rewind();
                     recBuffer.order(ByteOrder.LITTLE_ENDIAN).put(tempBufRec);
@@ -845,6 +878,8 @@ class RecorderAudioDevice extends BaseAudioDevice {
         Log.d(TAG, "stopRenderer");
         log.d("stopRenderer() called");
 
+        stopRecord = true;
+
         if (audioTrack == null) {
             throw new IllegalStateException("stopRenderer(): stop() called on uninitialized AudioTrack.");
         }
@@ -901,10 +936,15 @@ class RecorderAudioDevice extends BaseAudioDevice {
                     int bytesRead = (samplesRead << 1) * NUM_CHANNELS_RENDERING;
                     playBuffer.get(tempBufPlay, 0, bytesRead);
 
-                    // Write to File
-                    OutputStream fileOutputStream = new FileOutputStream(outputFile, true);
-                    fileOutputStream.write(tempBufPlay, 0, bytesRead);
-                    fileOutputStream.close();
+
+
+                    // Write to PipedStream
+                    if (startRecord && !stopRecord) {
+                        rendererStream.write(tempBufPlay, 0, bytesRead);
+//                        Log.d(TAG, String.format("Renderer Write: %d", bytesRead));
+                    }
+
+
 
                     // Write to Speaker
                     int bytesWritten = audioTrack.write(tempBufPlay, 0, bytesRead);
@@ -1181,6 +1221,89 @@ class RecorderAudioDevice extends BaseAudioDevice {
             }
         }
     }
+
+    private void startRecorder() {
+        Thread thread = new Thread(recorderRunnable);
+        thread.start();
+    }
+
+    private Runnable recorderRunnable = () -> {
+        startRecord = true;
+        stopRecord = false;
+
+        Log.d(TAG, "Recording Started");
+
+        OutputStream fileOutputStream = null;
+        try {
+            fileOutputStream = new FileOutputStream(outputFile, true);
+
+            while(!stopRecord) {
+                // Try Get from PipedStream
+                int oneSecondSize = captureSamplingRate * NUM_CHANNELS_CAPTURING * 2;
+//                Log.d(TAG, String.format("Capturer Available: %d, Renderer Available: %d, One Second Size: %d", capturerStream.available(), rendererStream.available(), oneSecondSize));
+                if (capturerStream.available() >= oneSecondSize && rendererStream.available() >= oneSecondSize) {
+                    // Read from Stream
+                    int capturerReadSize = capturerStream.read(tempBufCapturerStream, 0, oneSecondSize);
+                    int rendererReadSize = rendererStream.read(tempBufRendererStream, 0, oneSecondSize);
+//                    Log.d(TAG, String.format("Capturer: %d, Renderer: %d", capturerReadSize, rendererReadSize));
+
+                    // Mix
+                    ShortBuffer in1 = ByteBuffer.wrap(tempBufCapturerStream).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer();
+                    ShortBuffer in2 = ByteBuffer.wrap(tempBufRendererStream).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer();
+
+                    short[] sOut = new short[capturerReadSize / 2];
+
+                    for (int i = 0; i < sOut.length; i += 1) {
+                        float bIn1 = in1.get(i) * 1.0f;
+                        float bIn2 = in2.get(i) * 1.0f;
+                        float mixed = (bIn1 + bIn2) * 0.8f;
+
+                        if (mixed > Short.MAX_VALUE) {
+                            mixed = Short.MAX_VALUE;
+                        }
+                        if (mixed < Short.MIN_VALUE) {
+                            mixed = Short.MIN_VALUE;
+                        }
+
+                        sOut[i] = (short) mixed;
+                    }
+
+                    streamBuffer.rewind();
+                    streamBuffer.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(sOut, 0, sOut.length);
+//                    streamBuffer.order(ByteOrder.LITTLE_ENDIAN).put(tempBufCapturerStream, 0, capturerReadSize);
+//                    streamBuffer.order(ByteOrder.LITTLE_ENDIAN).put(tempBufRendererStream, 0, rendererReadSize);
+
+                    // Write to File
+                    byte[] recArray = streamBuffer.array();
+//                    fileOutputStream.write(recArray, 0, capturerReadSize);
+                    fileOutputStream.write(recArray, 0, rendererReadSize);
+                }
+
+
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Log.e(TAG, e.getMessage(), e);
+                }
+            }
+
+            Log.d(TAG, "Recording Ended");
+
+        } catch (IOException e) {
+            Log.d(TAG, "Recording Error");
+            Log.e(TAG, e.getMessage(), e);
+        } finally {
+            try {
+                startRecord = false;
+
+                if (fileOutputStream != null) {
+                    fileOutputStream.close();
+                }
+            } catch (IOException e) {
+                Log.e(TAG, e.getMessage(), e);
+            }
+        }
+    };
 
     private static enum BluetoothState {
         DISCONNECTED,
