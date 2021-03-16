@@ -31,6 +31,7 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.ShortBuffer;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.locks.Condition;
@@ -501,13 +502,15 @@ class RecorderAudioDevice extends BaseAudioDevice {
             }
         }
 
+        int bufferSize = Math.max(outputBufferSize, DEFAULT_BUFFER_SIZE);
         try {
-            playBuffer = ByteBuffer.allocateDirect(outputBufferSize);
+            Log.d(TAG, String.format("Buffer Size: %d", bufferSize));
+            playBuffer = ByteBuffer.allocateDirect(bufferSize);
         } catch (Exception e) {
             log.e(e.getMessage());
         }
 
-        tempBufPlay = new byte[outputBufferSize];
+        tempBufPlay = new byte[bufferSize];
 
         captureSettings = new AudioSettings(captureSamplingRate,
             NUM_CHANNELS_CAPTURING);
@@ -905,7 +908,8 @@ class RecorderAudioDevice extends BaseAudioDevice {
     }
 
     private Runnable renderThread = () -> {
-        int samplesToPlay = samplesPerBuffer;
+//        int samplesToPlay = samplesPerBuffer;
+        int samplesToPlay = captureSamplingRate / 100;
         try {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO);
         } catch (Exception e) {
@@ -1239,52 +1243,55 @@ class RecorderAudioDevice extends BaseAudioDevice {
 
             while(!stopRecord) {
                 // Try Get from PipedStream
-                int oneSecondSize = captureSamplingRate * NUM_CHANNELS_CAPTURING * 2;
 //                Log.d(TAG, String.format("Capturer Available: %d, Renderer Available: %d, One Second Size: %d", capturerStream.available(), rendererStream.available(), oneSecondSize));
-                if (capturerStream.available() >= oneSecondSize && rendererStream.available() >= oneSecondSize) {
-                    // Read from Stream
-                    int capturerReadSize = capturerStream.read(tempBufCapturerStream, 0, oneSecondSize);
-                    int rendererReadSize = rendererStream.read(tempBufRendererStream, 0, oneSecondSize);
+
+
+                // Read from Stream
+                int oneSecond = captureSamplingRate * NUM_CHANNELS_CAPTURING * 2;
+                int expectedReadSize = Math.min(oneSecond, Math.max(capturerStream.available(), rendererStream.available()));
+                int capturerReadSize = capturerStream.read(tempBufCapturerStream, 0, expectedReadSize);
+                int rendererReadSize = rendererStream.read(tempBufRendererStream, 0, expectedReadSize);
 //                    Log.d(TAG, String.format("Capturer: %d, Renderer: %d", capturerReadSize, rendererReadSize));
 
-                    // Mix
-                    ShortBuffer in1 = ByteBuffer.wrap(tempBufCapturerStream).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer();
-                    ShortBuffer in2 = ByteBuffer.wrap(tempBufRendererStream).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer();
+                // Fill remaining with zeros
+                Arrays.fill(tempBufCapturerStream, capturerReadSize, expectedReadSize, (byte) 0);
+                Arrays.fill(tempBufRendererStream, rendererReadSize, expectedReadSize, (byte) 0);
 
-                    short[] sOut = new short[capturerReadSize / 2];
 
-                    for (int i = 0; i < sOut.length; i += 1) {
-                        float bIn1 = in1.get(i) * 1.0f;
-                        float bIn2 = in2.get(i) * 1.0f;
-                        float mixed = (bIn1 + bIn2) * 0.8f;
+                // Mix
+                ShortBuffer in1 = ByteBuffer.wrap(tempBufCapturerStream).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer();
+                ShortBuffer in2 = ByteBuffer.wrap(tempBufRendererStream).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer();
 
-                        if (mixed > Short.MAX_VALUE) {
-                            mixed = Short.MAX_VALUE;
-                        }
-                        if (mixed < Short.MIN_VALUE) {
-                            mixed = Short.MIN_VALUE;
-                        }
+                short[] sOut = new short[expectedReadSize / 2];
 
-                        sOut[i] = (short) mixed;
+                for (int i = 0; i < sOut.length; i += 1) {
+                    float bIn1 = in1.get(i) * 1.0f;
+                    float bIn2 = in2.get(i) * 1.0f;
+                    float mixed = (bIn1 + bIn2) * 0.8f;
+
+                    if (mixed > Short.MAX_VALUE) {
+                        mixed = Short.MAX_VALUE;
+                    }
+                    if (mixed < Short.MIN_VALUE) {
+                        mixed = Short.MIN_VALUE;
                     }
 
-                    streamBuffer.rewind();
-                    streamBuffer.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(sOut, 0, sOut.length);
-//                    streamBuffer.order(ByteOrder.LITTLE_ENDIAN).put(tempBufCapturerStream, 0, capturerReadSize);
-//                    streamBuffer.order(ByteOrder.LITTLE_ENDIAN).put(tempBufRendererStream, 0, rendererReadSize);
-
-                    // Write to File
-                    byte[] recArray = streamBuffer.array();
-//                    fileOutputStream.write(recArray, 0, capturerReadSize);
-                    fileOutputStream.write(recArray, 0, rendererReadSize);
+                    sOut[i] = (short) mixed;
                 }
 
+                streamBuffer.rewind();
+                streamBuffer.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(sOut, 0, sOut.length);
 
-                try {
-                    Thread.sleep(100);
-                } catch (InterruptedException e) {
-                    Log.e(TAG, e.getMessage(), e);
-                }
+                // Write to File
+                byte[] recArray = streamBuffer.array();
+                fileOutputStream.write(recArray, 0, expectedReadSize);
+            }
+
+
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Log.e(TAG, e.getMessage(), e);
             }
 
             Log.d(TAG, "Recording Ended");
